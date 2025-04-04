@@ -1,0 +1,291 @@
+Fruit Ripeness Classifier - Setup Guide
+
+This document provides step-by-step instructions for setting up and using the fruit ripeness classifier model in Google Colab.
+
+ Prerequisites
+- A Google account with access to Google Colab
+- A Kaggle account with an API key
+- An ngrok account with an auth token
+
+ Step 1: Set Up Your Environment
+
+First, open a new Google Colab notebook and install the required Kaggle package:
+
+```python
+!pip install kaggle
+!mkdir ~/.kaggle
+```
+
+ Step 2: Configure Kaggle Access
+
+1. Download your kaggle.json file from your Kaggle account:
+   * Go to kaggle.com → Your Profile → Account tab → API section → "Create New API Token"
+   * This will download a file called 'kaggle.json'
+
+2. Upload your kaggle.json file to Colab:
+   ```python
+   from google.colab import files
+   
+   # Upload kaggle.json
+   files.upload()
+   ```
+
+3. Move the kaggle.json to the correct location and set permissions:
+   ```python
+   import os
+   
+   # Create the Kaggle directory if it doesn't exist
+   os.makedirs("/root/.kaggle", exist_ok=True)
+   
+   # Move kaggle.json to the correct location
+   !mv kaggle.json /root/.kaggle/
+   
+   # Set the correct permissions
+   !chmod 600 /root/.kaggle/kaggle.json
+   ```
+
+ Step 3: Download and Organize the Dataset
+
+1. Download the fruit image dataset:
+   ```python
+   !kaggle datasets download mdsagorahmed/fruit-image-dataset-22-classes --force
+   !unzip -q fruit-image-dataset-22-classes.zip
+   ```
+
+2. Organize the unripe fruits:
+   ```python
+   import os
+   import shutil
+   
+   # Define dataset paths
+   dataset_path = "dataset/Ripe & Unripe Fruits"
+   unripe_path = "dataset/unripe"
+   
+   # Ensure unripe folder exists
+   os.makedirs(unripe_path, exist_ok=True)
+   
+   # Move unripe folders to the unripe directory
+   for fruit_folder in os.listdir(dataset_path):
+       if "unripe" in fruit_folder.lower():  # Check if "unripe" is in the folder name
+           source = os.path.join(dataset_path, fruit_folder)
+           destination = os.path.join(unripe_path, fruit_folder)
+           shutil.move(source, destination)
+           print(f"✅ Moved '{fruit_folder}' to 'unripe' folder.")
+   
+   print("✅ Sorting complete!")
+   ```
+
+3. Organize the ripe fruits:
+   ```python
+   dataset_path = "dataset"
+   ripe_src = os.path.join(dataset_path, "Ripe & Unripe Fruits")
+   ripe_dest = os.path.join(dataset_path, "ripe")
+   
+   # Create the new "ripe" folder
+   os.makedirs(ripe_dest, exist_ok=True)
+   
+   # Move ripe images to the new folder
+   for fruit in os.listdir(ripe_src):
+       if "ripe" in fruit:
+           shutil.move(os.path.join(ripe_src, fruit), os.path.join(ripe_dest, fruit))
+   
+   print("✅ Dataset structure fixed!")
+   ```
+
+4. Clean up unnecessary folders:
+   ```python
+   # Define the path to the unnecessary folder
+   extra_folder = "dataset/Ripe & Unripe Fruits"
+   
+   # Remove it if it exists
+   if os.path.exists(extra_folder):
+       shutil.rmtree(extra_folder)
+       print("✅ Removed empty folder: Ripe & Unripe Fruits")
+   ```
+
+5. Verify the dataset structure:
+   ```python
+   !ls -R dataset
+   ```
+
+ Step 4: Install Required Libraries
+
+```python
+!pip install tensorflow keras matplotlib numpy
+!pip install flask flask-cors werkzeug matplotlib
+!pip install pyngrok
+```
+
+ Step 5: Configure ngrok for API Exposure
+
+```python
+!ngrok authtoken <your ngrok token>
+```
+
+ Step 6: Upload the Pre-trained Model
+
+1. The model file is located in the public folder in a folder called "Model" as `fruit_ripeness_classifier_final.keras`
+2. Upload it to your Colab session:
+
+   ```python
+   from google.colab import files
+   files.upload()  # Select the fruit_ripeness_classifier_final.keras file
+   ```
+
+ Step 7: Create and Run the Flask API
+
+Create a Flask application that will serve predictions:
+
+```python
+# Import the required libraries
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import tensorflow as tf
+import numpy as np
+import os
+from werkzeug.utils import secure_filename
+import matplotlib.pyplot as plt
+import base64
+from io import BytesIO
+from pyngrok import ngrok
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
+
+# Load the model from the local Colab filesystem
+model = tf.keras.models.load_model('fruit_ripeness_classifier_final.keras')
+
+# Configure upload folder
+UPLOAD_FOLDER = '/content/uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# Create uploads directory if it doesn't exist
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Get fruit classes from local dataset
+def get_classes():
+    # Adjust the path to where your dataset is in Colab
+    ripe_fruits = os.listdir(os.path.join('dataset', 'ripe'))
+    unripe_fruits = os.listdir(os.path.join('dataset', 'unripe'))
+
+    # Extract fruit names (remove 'ripe ' and 'unripe ' prefixes)
+    ripe_fruits = [fruit[5:] for fruit in ripe_fruits]
+    unripe_fruits = [fruit[7:] for fruit in unripe_fruits]
+
+    # Get unique fruit types
+    all_fruits = sorted(list(set(ripe_fruits + unripe_fruits)))
+
+    return all_fruits
+
+fruit_classes = get_classes()
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def predict_image(image_path):
+    # Image parameters
+    IMG_HEIGHT = 224
+    IMG_WIDTH = 224
+
+    # Load and preprocess the image
+    img = tf.keras.preprocessing.image.load_img(
+        image_path, target_size=(IMG_HEIGHT, IMG_WIDTH)
+    )
+    img_array = tf.keras.preprocessing.image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0) / 255.0
+
+    # Make prediction
+    fruit_pred, ripeness_pred = model.predict(img_array)
+
+    # Get results
+    fruit_index = np.argmax(fruit_pred[0])
+    fruit_name = fruit_classes[fruit_index]
+    ripeness = "Ripe" if ripeness_pred[0][0] > 0.5 else "Unripe"
+    confidence_fruit = float(fruit_pred[0][fruit_index] * 100)
+    confidence_ripeness = float((ripeness_pred[0][0] if ripeness == "Ripe" else (1 - ripeness_pred[0][0])) * 100)
+
+    # Create image with prediction for preview
+    plt.figure(figsize=(6, 6))
+    plt.imshow(img)
+    plt.title(f"{fruit_name} - {ripeness}\nFruit: {confidence_fruit:.1f}%\nRipeness: {confidence_ripeness:.1f}%")
+    plt.axis('off')
+
+    # Convert plot to base64 string
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png')
+    buffer.seek(0)
+    image_png = buffer.getvalue()
+    buffer.close()
+    plt.close()
+
+    encoded_image = base64.b64encode(image_png).decode('utf-8')
+
+    return {
+        "fruit": fruit_name,
+        "ripeness": ripeness,
+        "confidence_fruit": confidence_fruit,
+        "confidence_ripeness": confidence_ripeness,
+        "image": encoded_image
+    }
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    # Check if the post request has the file part
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+
+    file = request.files['file']
+
+    # If user does not select file, browser also
+    # submit an empty part without filename
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        try:
+            result = predict_image(filepath)
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    else:
+        return jsonify({'error': 'File type not allowed'}), 400
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok', 'model_loaded': model is not None})
+
+# Start ngrok when the app is run
+public_url = ngrok.connect(5000)
+print(f" * ngrok tunnel \"{public_url}\" -> \"http://127.0.0.1:5000\"")
+
+# Print the URL to use for API calls
+print(f" * Frontend should use: {public_url}/predict for API calls")
+
+# Run the app
+app.run(host='127.0.0.1', port=5000)
+```
+
+ Using the API
+
+Once the Flask app is running, you will see a public URL generated by ngrok. This URL can be used to access your API from any external application.
+
+To use the API:
+1. Send a POST request to `{ngrok_url}/predict` with a fruit image file
+2. The API will return:
+   - The predicted fruit type
+   - Ripeness state (Ripe/Unripe)
+   - Confidence scores
+   - A preview image with annotations
+
+ Troubleshooting
+
+- If you encounter errors with the dataset structure, verify the folder names match exactly what's expected in the code
+- Make sure your Kaggle API key has the correct permissions
+- If ngrok doesn't connect, check that your auth token is valid
